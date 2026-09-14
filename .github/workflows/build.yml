@@ -100,6 +100,14 @@ jobs:
             echo "icon_background=$(jq -r '.metadata.icon.background_color // "#FFFFFF"' app/src/main/assets/config.json)"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Declare permissions
+        # No configuration value is interpolated: the script reads config.json
+        # itself and emits permission strings only from its own closed map, so a
+        # hostile config can toggle a permission but never inject manifest XML.
+        run: |
+          set -euo pipefail
+          node scripts/generate-permissions.mjs
+
       - name: Generate launcher icon
         # "default" keeps the shipped placeholder, so this step is skipped
         # entirely rather than regenerating an identical icon every build.
