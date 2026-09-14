@@ -76,6 +76,24 @@ data class AppConfig(
         val showPageTitle: Boolean,
         val bottomNavEnabled: Boolean,
         val bottomNavItems: List<NavItem>,
+        val bottomNavStyle: BottomNavStyle,
+    )
+
+    /**
+     * Bottom bar appearance.
+     *
+     * Colours are nullable rather than defaulted to a constant: null means "let
+     * the Material theme decide", which is what most apps want and what keeps a
+     * config that never set a colour from freezing today's palette into itself.
+     */
+    data class BottomNavStyle(
+        val containerColor: String?,
+        val selectedColor: String?,
+        val unselectedColor: String?,
+        val indicatorColor: String?,
+        /** "always", "selected" or "never". Anything else behaves as "always". */
+        val labels: String,
+        val elevationDp: Int,
     )
 
     data class ThemeConfig(
@@ -88,6 +106,10 @@ data class AppConfig(
         val progressStyle: String,
         /** Null means follow the primary colour, which is what most configs want. */
         val progressColor: String?,
+        /** Null means Material's own track colour for the chosen indicator. */
+        val progressTrackColor: String?,
+        /** Bar height for linear, ring stroke width for circular. Material uses 4. */
+        val progressThicknessDp: Float,
     )
 
     data class DownloadsConfig(
@@ -152,6 +174,16 @@ data class AppConfig(
                         showPageTitle = topBar.optBoolean("show_page_title", false),
                         bottomNavEnabled = bottomNav.optBoolean("enabled", false),
                         bottomNavItems = bottomNav.navItems("items"),
+                        bottomNavStyle = bottomNav.obj("style").run {
+                            BottomNavStyle(
+                                containerColor = optStringOrNull("container_color"),
+                                selectedColor = optStringOrNull("selected_color"),
+                                unselectedColor = optStringOrNull("unselected_color"),
+                                indicatorColor = optStringOrNull("indicator_color"),
+                                labels = optString("labels", "always"),
+                                elevationDp = optInt("elevation_dp", 3),
+                            )
+                        },
                     )
                 },
                 theme = ThemeConfig(
@@ -164,6 +196,8 @@ data class AppConfig(
                     // optString returns "" for a missing key, and an empty
                     // string here must mean "inherit", not "transparent".
                     progressColor = theme.obj("progress").optString("color", "").ifEmpty { null },
+                    progressTrackColor = theme.obj("progress").optString("track_color", "").ifEmpty { null },
+                    progressThicknessDp = theme.obj("progress").optDouble("thickness_dp", 4.0).toFloat(),
                 ),
                 downloads = DownloadsConfig(
                     enabled = downloads.optBoolean("enabled", true),

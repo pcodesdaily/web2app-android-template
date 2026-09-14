@@ -5,6 +5,7 @@ import android.webkit.WebView
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.AlertDialog
@@ -13,7 +14,10 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarDefaults
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
+import androidx.compose.material3.ProgressIndicatorDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -24,6 +28,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 
 /** Everything the shell renders. Hoisted out of the Activity so the UI is pure. */
@@ -67,13 +72,59 @@ fun WebShell(
         },
         bottomBar = {
             if (showBottomNav) {
-                NavigationBar {
+                val barStyle = nav.bottomNavStyle
+
+                /*
+                 * Every colour falls back to the Material default rather than to
+                 * a constant. A config that never chose a colour must follow the
+                 * theme — including dark mode — instead of freezing whatever
+                 * palette happened to be current when it was written.
+                 */
+                val container = parseHexColor(barStyle.containerColor, NavigationBarDefaults.containerColor)
+                val itemColors = NavigationBarItemDefaults.colors(
+                    selectedIconColor = parseHexColor(
+                        barStyle.selectedColor,
+                        MaterialTheme.colorScheme.onSecondaryContainer,
+                    ),
+                    selectedTextColor = parseHexColor(
+                        barStyle.selectedColor,
+                        MaterialTheme.colorScheme.onSurface,
+                    ),
+                    indicatorColor = parseHexColor(
+                        barStyle.indicatorColor,
+                        MaterialTheme.colorScheme.secondaryContainer,
+                    ),
+                    unselectedIconColor = parseHexColor(
+                        barStyle.unselectedColor,
+                        MaterialTheme.colorScheme.onSurfaceVariant,
+                    ),
+                    unselectedTextColor = parseHexColor(
+                        barStyle.unselectedColor,
+                        MaterialTheme.colorScheme.onSurfaceVariant,
+                    ),
+                )
+
+                NavigationBar(
+                    containerColor = container,
+                    tonalElevation = barStyle.elevationDp.dp,
+                ) {
                     nav.bottomNavItems.forEach { item ->
                         NavigationBarItem(
                             selected = item.id == state.selectedNavId,
                             onClick = { onNavSelected(item) },
                             icon = { Icon(navIcon(item.icon), contentDescription = item.label) },
-                            label = { Text(item.label, maxLines = 1) },
+                            /*
+                             * "never" passes no label at all, which is what
+                             * produces an icon-only bar — alwaysShowLabel has no
+                             * effect without one. The content description above
+                             * still names every destination, so an icon-only bar
+                             * stays usable with a screen reader.
+                             */
+                            label = if (barStyle.labels == "never") null else {
+                                { Text(item.label, maxLines = 1) }
+                            },
+                            alwaysShowLabel = barStyle.labels != "selected",
+                            colors = itemColors,
                         )
                     }
                 }
@@ -114,17 +165,35 @@ fun WebShell(
                     ?.let { parseHexColor(it, fallback = MaterialTheme.colorScheme.primary) }
                     ?: MaterialTheme.colorScheme.primary
 
+                val thickness = config.theme.progressThicknessDp.dp
+
                 if (config.theme.progressStyle == "circular") {
                     CircularProgressIndicator(
                         progress = { state.progress / 100f },
                         color = tint,
+                        // Same dp means the ring's stroke here and the bar's
+                        // height below — one control, two honest meanings.
+                        strokeWidth = thickness,
+                        trackColor = parseHexColor(
+                            config.theme.progressTrackColor,
+                            ProgressIndicatorDefaults.circularDeterminateTrackColor,
+                        ),
                         modifier = Modifier.align(Alignment.Center),
                     )
                 } else {
                     LinearProgressIndicator(
                         progress = { state.progress / 100f },
                         color = tint,
-                        modifier = Modifier.fillMaxWidth().align(Alignment.TopCenter),
+                        trackColor = parseHexColor(
+                            config.theme.progressTrackColor,
+                            ProgressIndicatorDefaults.linearTrackColor,
+                        ),
+                        // LinearProgressIndicator has no thickness parameter;
+                        // its height is whatever the modifier gives it.
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(thickness)
+                            .align(Alignment.TopCenter),
                     )
                 }
             }
