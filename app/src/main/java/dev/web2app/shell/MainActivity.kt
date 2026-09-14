@@ -1,16 +1,23 @@
 package dev.web2app.shell
 
 import android.Manifest
+import android.app.PictureInPictureParams
 import android.app.DownloadManager
 import android.content.ActivityNotFoundException
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.IntentFilter
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.Uri
+import android.provider.MediaStore
+import org.json.JSONObject
+import java.io.File
 import android.os.Bundle
 import android.os.Environment
+import android.util.Rational
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.CookieManager
@@ -34,6 +41,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -56,6 +64,10 @@ class MainActivity : ComponentActivity() {
 
     /** Held between launching a chooser/permission prompt and its result. */
     private var pendingFileCallback: ValueCallback<Array<Uri>>? = null
+    /** Where a camera capture was told to write, so its result can be handed back. */
+    private var pendingCameraUpload: Uri? = null
+    /** Posted callback that gives up on a page which never paints. */
+    private var loadWatchdog: Runnable? = null
     private var pendingPermissionRequest: PermissionRequest? = null
     private var pendingGeolocation: Pair<String, GeolocationPermissions.Callback>? = null
 
@@ -153,7 +165,59 @@ class MainActivity : ComponentActivity() {
             "custom" -> c.userAgentCustom?.let { s.userAgentString = it }
         }
 
-        CookieManager.getInstance().setAcceptThirdPartyCookies(view, true)
+        /*
+         * Desktop mode is the shorthand people expect: the desktop user agent
+         * and a viewport wide enough for the layout it triggers. A custom user
+         * agent still wins, because someone who set one meant it.
+         */
+        if (c.desktopMode) {
+            if (c.userAgentMode != "custom") s.userAgentString = DESKTOP_UA
+            s.useWideViewPort = true
+            s.loadWithOverviewMode = true
+        }
+
+        /*
+         * Cookies.
+         *
+         * Third-party cookies were hardcoded on, and the three configuration
+         * flags did nothing. The default stays permissive because turning them
+         * off silently breaks sign-in on a great many sites — an embedded
+         * identity provider is a third-party cookie — but it is now a choice
+         * rather than an accident.
+         */
+        CookieManager.getInstance().apply {
+            setAcceptCookie(c.cookiesAccept)
+            setAcceptThirdPartyCookies(view, c.cookiesAccept && c.cookiesThirdParty)
+        }
+
+        // 0 means "let the page decide", which is what setInitialScale expects.
+        if (c.initialScale > 0) view.setInitialScale(c.initialScale)
+
+        when (c.scrollbars) {
+            "hidden" -> {
+                view.isVerticalScrollBarEnabled = false
+                view.isHorizontalScrollBarEnabled = false
+            }
+            // Drawn over the content rather than insetting it, so the page keeps
+            // its full width.
+            "overlay" -> view.scrollBarStyle = View.SCROLLBARS_INSIDE_OVERLAY
+        }
+
+        /*
+         * Long press starts text selection and raises WebView's action menu from
+         * the same gesture, and the platform offers no way to separate them —
+         * so this turns both off together, which is what the single config flag
+         * now promises.
+         */
+        view.isLongClickable = c.longPressEnabled
+        if (!c.longPressEnabled) view.setOnLongClickListener { true }
+
+        /*
+         * Software rendering is a deliberate escape hatch, not a tuning knob:
+         * it costs video playback and smooth scrolling. It exists because a
+         * handful of devices render some pages incorrectly with acceleration on.
+         */
+        if (!c.hardwareAcceleration) view.setLayerType(View.LAYER_TYPE_SOFTWARE, null)
 
         view.webViewClient = ShellWebViewClient()
         view.webChromeClient = ShellChromeClient()
@@ -188,11 +252,20 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
+            // Only for real navigations: the offline page must not arm a watchdog
+            // that would then replace the offline page.
+            if (!url.startsWith(OFFLINE_ASSET)) startLoadWatchdog()
+        }
+
         override fun onPageCommitVisible(view: WebView, url: String) {
             splashReady = true
+            // Something is on screen, which is the thing the watchdog waits for.
+            cancelLoadWatchdog()
         }
 
         override fun onPageFinished(view: WebView, url: String) {
+            cancelLoadWatchdog()
             state = state.copy(refreshing = false, pageTitle = view.title.orEmpty())
         }
     }
@@ -218,15 +291,27 @@ class MainActivity : ComponentActivity() {
             pendingFileCallback?.onReceiveValue(null)
             pendingFileCallback = filePathCallback
             return try {
-                fileChooser.launch(fileChooserParams.createIntent())
+                val intent = buildUploadIntent(fileChooserParams)
+                if (intent == null) {
+                    pendingFileCallback = null
+                    return false
+                }
+                fileChooser.launch(intent)
                 true
             } catch (e: ActivityNotFoundException) {
                 pendingFileCallback = null
+                pendingCameraUpload = null
                 false
             }
         }
 
         override fun onPermissionRequest(request: PermissionRequest) {
+            // Refused before anything is asked of the user: a prompt from an
+            // origin the project never allowed is not theirs to answer.
+            if (!originMayRequestPermissions(request.origin?.toString())) {
+                request.deny()
+                return
+            }
             val needed = request.resources.mapNotNull(::androidPermissionFor)
             if (needed.isEmpty()) {
                 request.deny()
@@ -248,7 +333,7 @@ class MainActivity : ComponentActivity() {
         }
 
         override fun onGeolocationPermissionsShowPrompt(origin: String, callback: GeolocationPermissions.Callback) {
-            if (!config.webview.geolocationEnabled) {
+            if (!config.webview.geolocationEnabled || !originMayRequestPermissions(origin)) {
                 callback.invoke(origin, false, false)
                 return
             }
@@ -332,15 +417,80 @@ class MainActivity : ComponentActivity() {
 
     // ── results ───────────────────────────────────────────────────────────────
 
+    /**
+     * Builds the chooser a page's file input opens.
+     *
+     * Returns null when the configuration leaves nothing to offer, so the
+     * caller can decline rather than launch an empty chooser.
+     *
+     * The camera is added as an initial intent rather than replacing the
+     * picker: a page asking for a photo usually wants either, and offering only
+     * one is a guess about the user's intent that we have no business making.
+     */
+    private fun buildUploadIntent(params: WebChromeClient.FileChooserParams): Intent? {
+        val browse = if (config.downloads.uploadBrowse) params.createIntent() else null
+        val capture = if (config.downloads.uploadCamera) createCameraIntent() else null
+
+        return when {
+            browse != null && capture != null ->
+                Intent.createChooser(browse, getString(R.string.upload_chooser_title)).apply {
+                    putExtra(Intent.EXTRA_INITIAL_INTENTS, arrayOf(capture))
+                }
+            browse != null -> browse
+            capture != null -> capture
+            else -> null
+        }
+    }
+
+    /**
+     * A capture intent pointed at a file the camera app may write.
+     *
+     * ACTION_IMAGE_CAPTURE hands the photo back through a URI we supply, not in
+     * the result, so the destination has to exist first and the permission has
+     * to be granted on the intent itself. Null if the device has no camera app,
+     * which is normal on emulators and some tablets.
+     */
+    private fun createCameraIntent(): Intent? {
+        return try {
+            val dir = File(getExternalFilesDir(null), "uploads").apply { mkdirs() }
+            val file = File(dir, "capture_${System.currentTimeMillis()}.jpg")
+            val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+
+            Intent(MediaStore.ACTION_IMAGE_CAPTURE).apply {
+                putExtra(MediaStore.EXTRA_OUTPUT, uri)
+                addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+            }.takeIf { it.resolveActivity(packageManager) != null }
+                ?.also { pendingCameraUpload = uri }
+        } catch (e: Exception) {
+            // A missing camera, a provider misconfiguration, or no external
+            // storage: the picker alone is still a working upload.
+            pendingCameraUpload = null
+            null
+        }
+    }
+
     private fun registerLaunchers() {
         fileChooser = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
             val callback = pendingFileCallback
+            val captured = pendingCameraUpload
             pendingFileCallback = null
+            pendingCameraUpload = null
+
+            /*
+             * A camera capture returns no data — the photo is at the URI we gave
+             * it — so parseResult finds nothing and the page would receive an
+             * empty selection. This supplies the URI in that case.
+             */
+            val value = WebChromeClient.FileChooserParams.parseResult(result.resultCode, result.data)
+            val resolved = when {
+                !value.isNullOrEmpty() -> value
+                result.resultCode == RESULT_OK && captured != null -> arrayOf(captured)
+                else -> value
+            }
+
             // Must always deliver a value, even on cancel, or the page's file input
             // stays permanently disabled.
-            callback?.onReceiveValue(
-                WebChromeClient.FileChooserParams.parseResult(result.resultCode, result.data)
-            )
+            callback?.onReceiveValue(resolved)
         }
 
         permissionLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
@@ -386,8 +536,50 @@ class MainActivity : ComponentActivity() {
                 }
             )
         }
-        getSystemService(DownloadManager::class.java).enqueue(request)
+        val id = getSystemService(DownloadManager::class.java).enqueue(request)
+        if (config.downloads.openAfterDownload) watchForCompletion(id)
         toast(R.string.download_started)
+    }
+
+    /**
+     * Opens a download once it finishes, when the project asked for that.
+     *
+     * Registered per download and unregistered the moment it fires, rather than
+     * kept alive for the life of the activity: a receiver that outlives its
+     * reason is a leak, and this one has exactly one job.
+     *
+     * RECEIVER_NOT_EXPORTED because the broadcast is a system one we only
+     * listen for — at targetSdk 36 an unspecified export flag is a crash, not a
+     * warning.
+     */
+    private fun watchForCompletion(downloadId: Long) {
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                if (intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1L) != downloadId) return
+                runCatching { unregisterReceiver(this) }
+
+                val manager = getSystemService(DownloadManager::class.java)
+                val uri = manager.getUriForDownloadedFile(downloadId) ?: return
+                val type = manager.getMimeTypeForDownloadedFile(downloadId)
+
+                val view = Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(uri, type ?: "*/*")
+                    // The URI belongs to DownloadManager, so the viewer needs
+                    // permission granted on the intent itself.
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                // Nothing installed that can open this type is normal, not an
+                // error — the file is downloaded either way.
+                runCatching { startActivity(view) }
+            }
+        }
+
+        ContextCompat.registerReceiver(
+            this,
+            receiver,
+            IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE),
+            ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
     }
 
     // ── state ─────────────────────────────────────────────────────────────────
@@ -399,9 +591,110 @@ class MainActivity : ComponentActivity() {
             caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
     }
 
+    /**
+     * Whether an origin is allowed to raise a permission prompt.
+     *
+     * The app's own site always may. Anything else has to be listed, because the
+     * alternative is that any frame the site embeds inherits the app's camera,
+     * microphone and location — which the person who installed it never agreed
+     * to and cannot see.
+     *
+     * Compared by host rather than by string: an origin arrives as
+     * "https://example.com" from one callback and "https://example.com/" from
+     * another, and a scheme or a trailing slash is not a security boundary.
+     */
+    private fun originMayRequestPermissions(origin: String?): Boolean {
+        val host = origin?.let { runCatching { Uri.parse(it).host }.getOrNull() }?.lowercase()
+            ?: return false
+
+        val startHost = runCatching { Uri.parse(config.startUrl).host }.getOrNull()?.lowercase()
+        if (host == startHost) return true
+
+        return config.permissions.allowedOrigins.any { allowed ->
+            val allowedHost = runCatching { Uri.parse(allowed).host }.getOrNull()?.lowercase()
+                ?: allowed.lowercase()
+            host == allowedHost
+        }
+    }
+
+    /**
+     * Starts the load watchdog.
+     *
+     * WebView exposes no load timeout, so "give up after N milliseconds" has to
+     * be a posted callback. It is cancelled the moment anything is painted, so
+     * a slow-but-working page is never interrupted — only a page that has shown
+     * nothing at all by the deadline.
+     */
+    private fun startLoadWatchdog() {
+        cancelLoadWatchdog()
+        val timeout = config.webview.loadTimeoutMs
+        if (timeout <= 0L) return
+
+        loadWatchdog = Runnable {
+            loadWatchdog = null
+            // Only if still nothing is visible. A page that painted and then kept
+            // loading images is working, not stuck.
+            if (!splashReady) {
+                webView.stopLoading()
+                showOffline()
+            }
+        }.also { webView.postDelayed(it, timeout) }
+    }
+
+    private fun cancelLoadWatchdog() {
+        loadWatchdog?.let { webView.removeCallbacks(it) }
+        loadWatchdog = null
+    }
+
+    /**
+     * Enters picture-in-picture when the user leaves during fullscreen video.
+     *
+     * Only while a custom view is showing, because that is the one moment
+     * WebView tells us media is playing — there is no callback for inline
+     * playback, so triggering on anything else would shrink the app into a
+     * floating window for a page that was only being read.
+     *
+     * Wrapped because the system refuses in states we cannot always predict:
+     * some devices and some users disable PiP entirely, and that refusal must
+     * not take the app down on the way to the home screen.
+     */
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        if (!config.webview.pictureInPicture || customView == null) return
+        if (!packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)) return
+
+        runCatching {
+            enterPictureInPictureMode(
+                PictureInPictureParams.Builder()
+                    // 16:9 unless the view says otherwise; the system clamps
+                    // anything it considers extreme.
+                    .setAspectRatio(Rational(16, 9))
+                    .build()
+            )
+        }
+    }
+
     private fun showOffline() {
         splashReady = true
-        webView.loadUrl(OFFLINE_ASSET)
+
+        /*
+         * Settings ride in the URL fragment.
+         *
+         * A fragment never leaves the device, needs no file access — which this
+         * WebView has switched off — and is readable synchronously, so the page
+         * never shows its default text and then visibly replaces it.
+         *
+         * JSONObject does the escaping, so a message containing quotes, angle
+         * brackets or a newline cannot break out of the value; the page assigns
+         * it with textContent, so it cannot become markup either.
+         */
+        val settings = JSONObject()
+            .put("message", config.offline.message ?: JSONObject.NULL)
+            .put("retry", config.offline.retryButton)
+            .put("accent", config.theme.primaryColor)
+            .toString()
+
+        webView.loadUrl("$OFFLINE_ASSET#" + Uri.encode(settings))
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -420,6 +713,26 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        cancelLoadWatchdog()
+
+        /*
+         * Non-persistent cookies are cleared as the app goes away.
+         *
+         * WebView keeps cookies across launches by default, so "do not persist"
+         * has to be an explicit erase. Done here rather than on pause, because
+         * pausing happens every time the user glances at another app and losing
+         * their session for that would be absurd.
+         *
+         * isFinishing distinguishes a real exit from a configuration change; a
+         * rotation must not sign anybody out.
+         */
+        if (!config.webview.cookiesPersist && isFinishing) {
+            CookieManager.getInstance().apply {
+                removeAllCookies(null)
+                flush()
+            }
+        }
+
         pendingFileCallback?.onReceiveValue(null)
         pendingFileCallback = null
         (webView.parent as? ViewGroup)?.removeView(webView)

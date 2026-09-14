@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Where the camera may write a photo taken for a file upload.
+
+  Scoped to one directory inside the app's own external files area. That
+  location needs no storage permission at minSdk 24, is removed when the app is
+  uninstalled, and is the narrowest place that satisfies ACTION_IMAGE_CAPTURE,
+  which requires a URI another process can write to.
+-->
+<paths>
+    <external-files-path name="uploads" path="uploads/" />
+</paths>

@@ -19,6 +19,7 @@
             android:name=".MainActivity"
             android:exported="true"
             android:launchMode="singleTop"
+            android:supportsPictureInPicture="true"
             android:windowSoftInputMode="adjustResize"
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|uiMode|density|fontScale">
             <intent-filter>
@@ -27,5 +28,21 @@
             </intent-filter>
             <!-- W2A_DEEPLINKS -->
         </activity>
+
+        <!--
+          Grants the camera app write access to one temporary file when the page
+          asks for a photo upload. exported=false and grantUriPermissions mean the
+          permission is handed out per-intent and expires with it — no directory is
+          ever shared, and nothing is readable by other apps at rest.
+        -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
     </application>
 </manifest>

@@ -22,8 +22,23 @@ data class AppConfig(
     val navigation: NavigationConfig,
     val theme: ThemeConfig,
     val downloads: DownloadsConfig,
+    val offline: OfflineConfig,
+    val permissions: PermissionsConfig,
     val pullToRefresh: Boolean,
 ) {
+    /**
+     * The page shown when there is no connection.
+     *
+     * The whole section was previously unparsed, so offline.html carried fixed
+     * copy and both configuration fields did nothing.
+     */
+    data class OfflineConfig(
+        /** Replaces the default line. Null keeps it. */
+        val message: String?,
+        /** Whether to offer a retry button at all. */
+        val retryButton: Boolean,
+    )
+
     data class WebViewConfig(
         val javaScriptEnabled: Boolean,
         val domStorage: Boolean,
@@ -35,6 +50,14 @@ data class AppConfig(
         val mixedContent: String,
         val autoplayRequiresGesture: Boolean,
         val allowFullscreen: Boolean,
+        /**
+         * Keep playing in a floating window when the user leaves the app.
+         *
+         * Only applies while a video is genuinely fullscreen — WebView gives no
+         * signal that a page is playing inline media, so there is nothing
+         * reliable to trigger on otherwise.
+         */
+        val pictureInPicture: Boolean,
         val multiWindowEnabled: Boolean,
         val popupPolicy: String,
         val textZoom: Int,
@@ -45,7 +68,55 @@ data class AppConfig(
         val wideViewport: Boolean,
         val overviewMode: Boolean,
         val offlineDetection: Boolean,
+        /** CookieManager.setAcceptCookie. Off means the site cannot keep a session. */
+        val cookiesAccept: Boolean,
+        /** CookieManager.setAcceptThirdPartyCookies. Needed by most embedded logins. */
+        val cookiesThirdParty: Boolean,
+        /** When false, cookies are cleared as the app stops, so nothing survives a restart. */
+        val cookiesPersist: Boolean,
+        /** WebView.setInitialScale, as a percentage. 0 leaves the page to decide. */
+        val initialScale: Int,
+        /** "default", "hidden" or "overlay". */
+        val scrollbars: String,
+        /**
+         * Long-press behaviour.
+         *
+         * Both schema flags collapse into this one. WebView starts text
+         * selection and raises its action menu from the same gesture and offers
+         * no way to separate them, so turning either off turns off both — which
+         * is the honest reading of two switches the platform cannot tell apart.
+         */
+        val longPressEnabled: Boolean,
+        /**
+         * Desktop mode.
+         *
+         * A convenience that sets the desktop user agent and a wide viewport
+         * together, which is what people mean by it. Distinct from
+         * user_agent.mode, which changes only the header.
+         */
+        val desktopMode: Boolean,
+        /** Software rendering when false. An escape hatch for rendering bugs. */
+        val hardwareAcceleration: Boolean,
+        /**
+         * How long to wait for a page before giving up, in milliseconds.
+         *
+         * WebView has no load timeout of its own, so this is a watchdog: if the
+         * page has not committed anything visible by then, the offline screen is
+         * shown rather than leaving someone on a blank white rectangle with no
+         * way to know whether it is still trying.
+         */
+        val loadTimeoutMs: Long,
     )
+
+    /**
+     * Which origins may ask for a device permission.
+     *
+     * Empty means the app's own site and nothing else. An embedded third-party
+     * frame asking for the camera is the case this exists to refuse — the user
+     * chose to install an app for one site, not to hand its permissions to
+     * whatever that site happens to embed.
+     */
+    data class PermissionsConfig(val allowedOrigins: List<String>)
 
     data class LinksConfig(
         val internalHosts: List<String>,
@@ -117,6 +188,19 @@ data class AppConfig(
         val showNotification: Boolean,
         val uploadsEnabled: Boolean,
         val acceptMime: List<String>,
+        /** Offers the camera alongside the file picker when a page asks for a file. */
+        val uploadCamera: Boolean,
+        /**
+         * Whether the file picker is offered at all.
+         *
+         * Gallery and files collapse into one flag: Android's document picker
+         * shows photos and documents together and offers no way to present one
+         * without the other, so two switches would promise a distinction the
+         * platform does not make.
+         */
+        val uploadBrowse: Boolean,
+        /** Opens a finished download rather than only notifying. */
+        val openAfterDownload: Boolean,
     )
 
     companion object {
@@ -131,6 +215,7 @@ data class AppConfig(
             val navigation = root.obj("navigation")
             val theme = root.obj("theme")
             val downloads = root.obj("downloads")
+            val offline = root.obj("offline")
             val uploads = downloads.obj("uploads")
 
             return AppConfig(
@@ -147,6 +232,7 @@ data class AppConfig(
                     userAgentCustom = webview.obj("user_agent").optStringOrNull("custom_string"),
                     mixedContent = webview.optString("mixed_content", "never"),
                     autoplayRequiresGesture = webview.obj("media").optBoolean("autoplay_requires_gesture", true),
+                    pictureInPicture = webview.obj("media").optBoolean("picture_in_picture", false),
                     allowFullscreen = webview.obj("media").optBoolean("fullscreen", true),
                     multiWindowEnabled = webview.obj("multi_window").optBoolean("enabled", false),
                     popupPolicy = webview.obj("multi_window").optString("popup_policy", "same_webview"),
@@ -158,6 +244,17 @@ data class AppConfig(
                     wideViewport = webview.obj("viewport").optBoolean("wide_viewport", true),
                     overviewMode = webview.obj("viewport").optBoolean("overview_mode", true),
                     offlineDetection = webview.obj("network").optBoolean("offline_detection", true),
+                    cookiesAccept = webview.obj("cookies").optBoolean("accept", true),
+                    cookiesThirdParty = webview.obj("cookies").optBoolean("third_party", true),
+                    cookiesPersist = webview.obj("cookies").optBoolean("persist", true),
+                    initialScale = webview.obj("zoom").optInt("initial_scale", 0),
+                    scrollbars = webview.optString("scrollbars", "default"),
+                    longPressEnabled = webview.obj("long_press").let {
+                        it.optBoolean("context_menu", true) && it.optBoolean("selection", true)
+                    },
+                    desktopMode = webview.optBoolean("desktop_mode", false),
+                    hardwareAcceleration = webview.optBoolean("hardware_acceleration", true),
+                    loadTimeoutMs = webview.obj("network").optLong("timeout_ms", 30000L),
                 ),
                 links = LinksConfig(
                     internalHosts = links.strings("internal_hosts"),
@@ -199,7 +296,19 @@ data class AppConfig(
                     progressTrackColor = theme.obj("progress").optString("track_color", "").ifEmpty { null },
                     progressThicknessDp = theme.obj("progress").optDouble("thickness_dp", 4.0).toFloat(),
                 ),
+                permissions = PermissionsConfig(
+                    allowedOrigins = root.obj("permissions").strings("allowed_origins"),
+                ),
+                offline = OfflineConfig(
+                    message = offline.optString("message", "").ifEmpty { null },
+                    retryButton = offline.optBoolean("retry_button", true),
+                ),
                 downloads = DownloadsConfig(
+                    uploadCamera = downloads.obj("uploads").optBoolean("camera", true),
+                    uploadBrowse = downloads.obj("uploads").let {
+                        it.optBoolean("gallery", true) || it.optBoolean("files", true)
+                    },
+                    openAfterDownload = downloads.optBoolean("open_after_download", false),
                     enabled = downloads.optBoolean("enabled", true),
                     showNotification = downloads.optBoolean("show_notification", true),
                     uploadsEnabled = uploads.optBoolean("enabled", true),

@@ -11,9 +11,42 @@
   p { margin:0 0 1.5rem; opacity:.7; }
   button { font:inherit; padding:.7rem 1.4rem; border:0; border-radius:999px;
            background:#2563EB; color:#fff; cursor:pointer; }
+  button[hidden] { display:none; }
 </style>
 <div>
-  <h1>You're offline</h1>
-  <p>Check your connection and try again.</p>
-  <button onclick="location.reload()">Retry</button>
+  <h1>You&rsquo;re offline</h1>
+  <p id="message">Check your connection and try again.</p>
+  <button id="retry" onclick="location.reload()">Retry</button>
 </div>
+<script>
+  /*
+   * The message and the retry button come from the project's configuration.
+   *
+   * They arrive in the URL fragment rather than by reading config.json, because
+   * a fragment never leaves the device, needs no file access — which the
+   * WebView has switched off — and is available synchronously, so the page
+   * never renders the default text and then visibly replaces it.
+   *
+   * textContent, never innerHTML: the message is text the customer wrote, and
+   * assigning it as markup would let a stray "<" become an element, or worse.
+   */
+  (function () {
+    try {
+      var raw = location.hash.slice(1);
+      if (!raw) return;
+      var settings = JSON.parse(decodeURIComponent(raw));
+
+      if (typeof settings.message === "string" && settings.message) {
+        document.getElementById("message").textContent = settings.message;
+      }
+      if (settings.retry === false) {
+        document.getElementById("retry").hidden = true;
+      }
+      if (typeof settings.accent === "string" && /^#[0-9a-fA-F]{6}$/.test(settings.accent)) {
+        document.getElementById("retry").style.background = settings.accent;
+      }
+    } catch (e) {
+      /* Malformed settings just leave the defaults in place. */
+    }
+  })();
+</script>
