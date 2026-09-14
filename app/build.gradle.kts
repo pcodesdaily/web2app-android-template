@@ -45,6 +45,10 @@ android {
         // passes theme.background_color through so the launch screen matches
         // the app instead of flashing white on a dark theme.
         resValue("color", "splash_background", prop("w2aSplashBackground", "#FFFFFF"))
+        // The adaptive icon's background layer. A resource rather than runtime
+        // config for the same reason as the splash: the launcher draws the icon
+        // without ever starting the app.
+        resValue("color", "ic_launcher_background", prop("w2aIconBackground", "#FFFFFF"))
         manifestPlaceholders["w2aCleartext"] = prop("w2aCleartext", "false")
     }
 

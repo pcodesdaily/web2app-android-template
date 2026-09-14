@@ -94,7 +94,49 @@ jobs:
             echo "cleartext=$(jq -r '(.source.url // "") | startswith("http://")' app/src/main/assets/config.json)"
             echo "minify=$(jq -r '.build.minify // false' app/src/main/assets/config.json)"
             echo "shrink=$(jq -r '.build.shrink_resources // false' app/src/main/assets/config.json)"
+            echo "icon_source=$(jq -r '.metadata.icon.source // "default"' app/src/main/assets/config.json)"
+            echo "icon_url=$(jq -r '.metadata.icon.url // ""' app/src/main/assets/config.json)"
+            echo "icon_padding=$(jq -r '.metadata.icon.padding_percent // 12' app/src/main/assets/config.json)"
+            echo "icon_background=$(jq -r '.metadata.icon.background_color // "#FFFFFF"' app/src/main/assets/config.json)"
           } >> "$GITHUB_OUTPUT"
+
+      - name: Generate launcher icon
+        # "default" keeps the shipped placeholder, so this step is skipped
+        # entirely rather than regenerating an identical icon every build.
+        if: steps.config.outputs.icon_source != 'default'
+        env:
+          # Untrusted: a URL from the project configuration. Passed as an
+          # environment variable and quoted at use, never interpolated into the
+          # script, so it cannot become a command.
+          ICON_SOURCE: ${{ steps.config.outputs.icon_source }}
+          ICON_URL: ${{ steps.config.outputs.icon_url }}
+          ICON_PADDING: ${{ steps.config.outputs.icon_padding }}
+          ICON_BACKGROUND: ${{ steps.config.outputs.icon_background }}
+        run: |
+          set -euo pipefail
+          SOURCE_FILE="$RUNNER_TEMP/icon-source"
+
+          if [ "$ICON_SOURCE" = "upload" ]; then
+            # An uploaded icon is committed to the repository by the API, which
+            # is also where it stays — there is no asset service to store it in.
+            test -f app/icon-source.png || {
+              echo "::error::icon.source=upload but app/icon-source.png is missing"
+              exit 1
+            }
+            cp app/icon-source.png "$SOURCE_FILE"
+          else
+            # --proto =https: refuse to be redirected onto file:// or gopher://.
+            # --max-filesize caps the download before it is written, so a hostile
+            # URL cannot fill the runner disk.
+            curl --fail --silent --show-error --location                  --proto '=https' --proto-redir '=https'                  --max-time 20 --max-filesize 5000000                  --output "$SOURCE_FILE" -- "$ICON_URL"
+          fi
+
+          # Decoding is left to ImageIO, which reports a format it cannot read
+          # rather than guessing — but an HTML error page saved as a PNG is a
+          # common enough failure to be worth naming clearly.
+          test -s "$SOURCE_FILE" || { echo "::error::icon source is empty"; exit 1; }
+
+          java scripts/GenerateIcons.java             "$SOURCE_FILE" app/src/main/res "$ICON_PADDING" "$ICON_BACKGROUND"
 
       - name: Materialise upload keystore
         env:

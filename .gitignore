@@ -27,3 +27,14 @@ keystore.properties
 .idea/
 *.iml
 .DS_Store
+
+# Launcher icons generated per build by scripts/GenerateIcons.java from the
+# project's configured icon. They are build output, not source — committing them
+# would bake one customer's branding into the template.
+app/src/main/res/mipmap-mdpi/
+app/src/main/res/mipmap-hdpi/
+app/src/main/res/mipmap-xhdpi/
+app/src/main/res/mipmap-xxhdpi/
+app/src/main/res/mipmap-xxxhdpi/
+app/src/main/res/drawable/ic_launcher_foreground.png
+app/icon-source.png
