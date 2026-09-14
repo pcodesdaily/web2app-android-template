@@ -2,11 +2,17 @@ package dev.web2app.shell
 
 import android.view.ViewGroup
 import android.webkit.WebView
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.windowInsetsBottomHeight
+import androidx.compose.foundation.layout.windowInsetsTopHeight
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
@@ -56,6 +62,24 @@ fun WebShell(
     // app must not render a broken bar if an older config slips through.
     val showBottomNav = nav.bottomNavEnabled && nav.bottomNavItems.size >= 2
 
+    /*
+     * System bar colours are painted here, not on the Window.
+     *
+     * Window.setStatusBarColor is deprecated, and from targetSdk 35 the platform
+     * documentation states the colour "will be transparent and cannot be
+     * changed" — its replacement is, verbatim, "Draw proper background behind
+     * WindowInsets.Type.statusBars() instead". Under mandatory edge-to-edge the
+     * app already draws underneath the bars, so this is a band of colour at the
+     * inset height rather than a window attribute.
+     *
+     * Null leaves the bar transparent, so an unset colour shows the page behind
+     * it — which is what edge-to-edge looks like, and what someone who never
+     * chose a colour should get.
+     */
+    val statusScrim = config.theme.statusBarColor?.let { parseHexColor(it, Color.Transparent) }
+    val navScrim = config.theme.navigationBarColor?.let { parseHexColor(it, Color.Transparent) }
+
+    Box(Modifier.fillMaxSize()) {
     Scaffold(
         topBar = {
             if (nav.topBarEnabled) {
@@ -197,6 +221,26 @@ fun WebShell(
                     )
                 }
             }
+        }
+    }
+
+        if (statusScrim != null) {
+            Box(
+                Modifier
+                    .align(Alignment.TopCenter)
+                    .fillMaxWidth()
+                    .windowInsetsTopHeight(WindowInsets.statusBars)
+                    .background(statusScrim),
+            )
+        }
+        if (navScrim != null) {
+            Box(
+                Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .windowInsetsBottomHeight(WindowInsets.navigationBars)
+                    .background(navScrim),
+            )
         }
     }
 

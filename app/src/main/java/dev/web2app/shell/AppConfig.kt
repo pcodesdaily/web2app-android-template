@@ -173,6 +173,17 @@ data class AppConfig(
         val backgroundColor: String,
         val statusBarLightIcons: Boolean,
         val statusBarHidden: Boolean,
+        /**
+         * Null means leave the bar transparent, which is what edge-to-edge does.
+         *
+         * Window.setStatusBarColor is deprecated and, from targetSdk 35, the
+         * documentation says the colour "will be transparent and cannot be
+         * changed". The documented replacement is to draw a background behind
+         * WindowInsets.Type.statusBars() — which is what the shell does.
+         */
+        val statusBarColor: String?,
+        val navigationBarColor: String?,
+        val navigationBarLightIcons: Boolean,
         /** "linear", "circular" or "none". Anything else is treated as "linear". */
         val progressStyle: String,
         /** Null means follow the primary colour, which is what most configs want. */
@@ -289,6 +300,9 @@ data class AppConfig(
                     backgroundColor = theme.optString("background_color", "#FFFFFF"),
                     statusBarLightIcons = theme.obj("status_bar").optBoolean("light_icons", false),
                     statusBarHidden = theme.obj("status_bar").optBoolean("hidden", false),
+                    statusBarColor = theme.obj("status_bar").optString("color", "").ifEmpty { null },
+                    navigationBarColor = theme.obj("navigation_bar").optString("color", "").ifEmpty { null },
+                    navigationBarLightIcons = theme.obj("navigation_bar").optBoolean("light_icons", false),
                     progressStyle = theme.obj("progress").optString("style", "linear"),
                     // optString returns "" for a missing key, and an empty
                     // string here must mean "inherit", not "transparent".

@@ -119,7 +119,21 @@ class MainActivity : ComponentActivity() {
 
     private fun applySystemBars() {
         val controller = WindowInsetsControllerCompat(window, window.decorView)
-        controller.isAppearanceLightStatusBars = config.theme.statusBarLightIcons
+
+        /*
+         * Inverted on purpose, and this was a real bug.
+         *
+         * APPEARANCE_LIGHT_STATUS_BARS is documented as "Changes the foreground
+         * color for light status bars", and the flag it sets below API 30,
+         * SYSTEM_UI_FLAG_LIGHT_STATUS_BAR, is "compatible with light status bar
+         * backgrounds" — so true means a LIGHT BAR with DARK icons.
+         *
+         * The config field asks for light *icons*. Assigning it straight across
+         * gave every app the opposite of what was chosen: dark icons on a dark
+         * status bar, which is invisible.
+         */
+        controller.isAppearanceLightStatusBars = !config.theme.statusBarLightIcons
+        controller.isAppearanceLightNavigationBars = !config.theme.navigationBarLightIcons
         if (config.theme.statusBarHidden) controller.hide(WindowInsetsCompat.Type.statusBars())
     }
 
