@@ -6,7 +6,9 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
@@ -20,6 +22,7 @@ import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.viewinterop.AndroidView
 
@@ -95,11 +98,35 @@ fun WebShell(
                 AndroidView(factory = { webView.detachFromParent() }, modifier = Modifier.fillMaxSize())
             }
 
-            if (state.progress in 1..99) {
-                LinearProgressIndicator(
-                    progress = { state.progress / 100f },
-                    modifier = Modifier.fillMaxWidth().align(Alignment.TopCenter),
-                )
+            /*
+             * Loading indicator.
+             *
+             * All three styles are components Material 3 already provides, so
+             * offering the choice costs the APK nothing — which is the rule for
+             * anything a design template is allowed to change.
+             *
+             * "none" is a real option, not an omission: a site with its own
+             * loading bar otherwise shows two, and a wall-mounted kiosk should
+             * not flash a progress bar at the room on every navigation.
+             */
+            if (state.progress in 1..99 && config.theme.progressStyle != "none") {
+                val tint = config.theme.progressColor
+                    ?.let { parseHexColor(it, fallback = MaterialTheme.colorScheme.primary) }
+                    ?: MaterialTheme.colorScheme.primary
+
+                if (config.theme.progressStyle == "circular") {
+                    CircularProgressIndicator(
+                        progress = { state.progress / 100f },
+                        color = tint,
+                        modifier = Modifier.align(Alignment.Center),
+                    )
+                } else {
+                    LinearProgressIndicator(
+                        progress = { state.progress / 100f },
+                        color = tint,
+                        modifier = Modifier.fillMaxWidth().align(Alignment.TopCenter),
+                    )
+                }
             }
         }
     }

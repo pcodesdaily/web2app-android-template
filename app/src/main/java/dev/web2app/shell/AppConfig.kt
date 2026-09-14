@@ -84,6 +84,10 @@ data class AppConfig(
         val backgroundColor: String,
         val statusBarLightIcons: Boolean,
         val statusBarHidden: Boolean,
+        /** "linear", "circular" or "none". Anything else is treated as "linear". */
+        val progressStyle: String,
+        /** Null means follow the primary colour, which is what most configs want. */
+        val progressColor: String?,
     )
 
     data class DownloadsConfig(
@@ -156,6 +160,10 @@ data class AppConfig(
                     backgroundColor = theme.optString("background_color", "#FFFFFF"),
                     statusBarLightIcons = theme.obj("status_bar").optBoolean("light_icons", false),
                     statusBarHidden = theme.obj("status_bar").optBoolean("hidden", false),
+                    progressStyle = theme.obj("progress").optString("style", "linear"),
+                    // optString returns "" for a missing key, and an empty
+                    // string here must mean "inherit", not "transparent".
+                    progressColor = theme.obj("progress").optString("color", "").ifEmpty { null },
                 ),
                 downloads = DownloadsConfig(
                     enabled = downloads.optBoolean("enabled", true),

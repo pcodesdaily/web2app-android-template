@@ -40,6 +40,11 @@ android {
         versionCode = prop("w2aVersionCode", "1").toInt()
         versionName = prop("w2aVersionName", "1.0.0")
         resValue("string", "app_name", prop("w2aAppName", "Web2App"))
+        // The splash window is painted by the system before any of our code
+        // runs, so this cannot come from config.json at runtime. The runner
+        // passes theme.background_color through so the launch screen matches
+        // the app instead of flashing white on a dark theme.
+        resValue("color", "splash_background", prop("w2aSplashBackground", "#FFFFFF"))
         manifestPlaceholders["w2aCleartext"] = prop("w2aCleartext", "false")
     }
 
