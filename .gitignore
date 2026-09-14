@@ -1,0 +1,29 @@
+# Local machine configuration — contains absolute SDK paths, never portable.
+local.properties
+
+# Gradle and build output.
+.gradle/
+build/
+app/build/
+.kotlin/
+.cxx/
+
+# Signing material. A keystore must never reach a repository: anyone holding it
+# can publish an update to the app under its identity.
+*.jks
+*.keystore
+keystore.properties
+*.p12
+
+# Build artefacts.
+*.apk
+*.aab
+*.aar
+
+# Verification logs written by the scripts in scripts/.
+*.log
+
+# Editors.
+.idea/
+*.iml
+.DS_Store

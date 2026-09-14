@@ -1,0 +1,17 @@
+# Normalise text on commit; check out with the platform's own endings.
+* text=auto
+
+# These are executed by /bin/sh on the Linux build runners. If they are ever
+# committed with CRLF the runner fails with "bad interpreter", so pin LF
+# regardless of the contributor's core.autocrlf setting.
+gradlew        text eol=lf
+*.sh           text eol=lf
+*.mjs          text eol=lf
+.github/**     text eol=lf
+
+*.bat          text eol=crlf
+
+*.jar          binary
+*.png          binary
+*.keystore     binary
+*.jks          binary

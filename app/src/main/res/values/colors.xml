@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Overwritten per build from config.theme. -->
+    <color name="splash_background">#FFFFFF</color>
+    <color name="primary">#2563EB</color>
+    <color name="ic_launcher_background">#2563EB</color>
+</resources>

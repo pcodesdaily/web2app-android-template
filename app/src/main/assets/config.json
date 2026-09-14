@@ -1,0 +1,5 @@
+{
+  "schema_version": 1,
+  "metadata": { "app_name": "Web2App", "package_name": "dev.web2app.shell", "version_name": "1.0.0", "version_code": 1 },
+  "source": { "type": "url", "url": "https://example.com" }
+}
